@@ -1,18 +1,15 @@
 {
-  "name": "bingo-telegram-bot",
+  "name": "sproutbingo",
   "version": "1.0.0",
-  "description": "Telegram bot for 1Bingo",
-  "main": "index.js",
+  "description": "",
+  "main": "main.js",
   "scripts": {
-    "start": "node index.js"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "author": "TarviLion",
   "license": "ISC",
-  "dependencies": {
-    "axios": "^1.7.2",
-    "dotenv": "^17.2.0",
-     "express": "^4.19.2",
-    "node-telegram-bot-api": "^0.61.0"
+"dependencies": {
+    "telegraf": "^4.16.3",
+    "mongoose": "^8.3.2",
   }
 }

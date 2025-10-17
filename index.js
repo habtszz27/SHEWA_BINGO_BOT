@@ -1,171 +1,267 @@
-require("dotenv").config();
-const TelegramBot = require("node-telegram-bot-api");
-const axios = require("axios");
-const express = require("express");
-const bodyParser = require("body-parser");
+const Index = ()=> {
+  const {
+    Telegraf,
+    Markup
+  } = require('telegraf');
 
-const token = process.env.BOT_TOKEN;
-const backendUrl = process.env.BACKEND_URL;
-const appUrl = "https://bingo-telegram-bot.onrender.com";
+  const Bingo = require('./modules/bingo.js');
+  const result = require('./modules/result.js')
+  const table = require('./modules/table.js');
+  const client = require ('./modules/client_v1.js');
+  const lang_data = require('./modules/lang.js');
+  const cronos = require('./modules/cronos.js')
+  const config = require('./../config.js');
+  const connectDB = require('./DB/db.js')
+  //(async function() {
+  connectDB();
+  //  })();
+  const User = require('./DB/models/User.js')
 
-// Create Express app
-const app = express();
-app.use(bodyParser.json());
+  client.hostConfig(config.CLIENT_V1_HOST)
+  client.setAuthToken(config.CLIENT_V1_TOKEN);
+  const bot = new Telegraf(config.BOT_TOKEN);
+  result.setBot(bot)
+  const lang = (data)=> {
+    let userLang = data.from ? data.from.languague_code: data.message ? data.message.user.lang: data;
+    if (userLang == 'es') {
+      return lang_data.es;
+    } else {
+      return lang_data.en;
+    }
+  }
+  const bingo_data = {
+    boto: ['mini',
+      'mega',
+      'super'],
+    name: {
+      "1": "🥇 MiniLotto 1spc 🥇",
+      "10": "🎖 SuperLotto 10spc ",
+      "100": "🏆 MegaLotto 100spc 🏆",
+    },
+    priceOf: (ticket)=> {
+      const min = 1,
+      meg = 10,
+      sup = 100;
+      return ticket != 'ticket_mega' ? ticket != "ticket_super" ? ticket != "ticket_mini" ? 0: min: meg: sup;
+    }
+  }
 
-// Create bot in webhook mode
-const bot = new TelegramBot(token, { webHook: { port: 3000 } });
-bot.setWebHook(`${appUrl}/bot${token}`);
+  const bingo = {
+    ticket_mini: new Bingo(bingo_data.boto[0]),
+    ticket_super: new Bingo(bingo_data.boto[1]),
+    ticket_mega: new Bingo(bingo_data.boto[2]),
+  }
 
-// Webhook route
-app.post(`/bot${token}`, (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
+  const checkStatus = async (ctx)=> {
+    const chatId = ctx.chat.id;
+    const msg = await ctx.reply(lang(ctx).check)
+    const data = await client.getUserData(chatId)
+    switch (data.status) {
+      case 'ERROR':
+        switch (data.message) {
+        case 'USER_NOT_FOUND':
+          let {
+            inline,
+            text
+          } = lang(ctx).start.USER_NOT_FOUND;
+          let key = inline;
+          key.push([{
+            text: 'SproutComp', url: `https://www.sproutcomp.pro/auth/telegram/${chatId}`
+          }])
+          bot.telegram.deleteMessage(msg.chat.id, msg.message_id)
+          return await ctx.reply(text, Markup.inlineKeyboard(key));
+        default:
+          bot.telegram.deleteMessage(msg.chat.id, msg.message_id)
+          return await ctx.reply(lang(ctx).start.NOT_FOUND.text);
+        }
+      case 'SUCCESS':
+        let {
+          keyboard,
+          text
+        } = lang(data).start.SUCCESS;
+        bot.telegram.deleteMessage(msg.chat.id, msg.message_id)
+        return await ctx.reply(text, Markup.keyboard(keyboard).resize());
+    }
+  }
 
-// Health check
-app.get("/", (req, res) => {
-  res.send("✅ 1Bingo Telegram Bot is running with webhook!");
-});
+  bot.start(async (ctx) => {
+    await checkStatus(ctx);
+    let user = await User.findOne({
+      id: ctx.chat.id
+    })
+    if (!user) {
+      user = new User({
+        id: ctx.chat.id
+      })
+    }
+    user.save();
+  });
+  bot.action("check_status",
+    async (ctx) => await checkStatus(ctx))
 
-// /start — Ask phone only if not registered
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const response = await axios.get(`${backendUrl}/api/user/check/${chatId}`);
-    const exists = response.data.exists;
-
-    if (exists) {
-const frontendBaseUrl = "https://bingo-telegram-web.vercel.app";
-const playUrl = `${frontendBaseUrl}?telegram_id=${chatId}&first_name=${encodeURIComponent(msg.from.first_name || "")}&username=${encodeURIComponent(msg.from.username || "")}`;
-
-bot.sendMessage(chatId, "✅ You're already registered!\nTap below to play 🎮", {
-  reply_markup: {
-    inline_keyboard: [[
-      {
-        text: "▶️ Play",
-        url: playUrl,
+  bot.hears('🎲 Jugar',
+    async (ctx) => {
+      const chatId = ctx.chat.id;
+      const data = await client.getUserData(chatId);
+      if (data.status == 'SUCCESS') {
+        const {
+          text,
+          inline
+        } = lang(data).play
+        ctx.deleteMessage(ctx.message.message_id);
+        return await ctx.reply(text, Markup.inlineKeyboard(inline))
+      } else {
+        await existUser(chatId);
       }
-    ]]
-  }
-});
-    } else {
-      const contactOptions = {
-        reply_markup: {
-          keyboard: [
-            [{ text: "📞 Share Your Phone", request_contact: true }],
-          ],
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      };
-      bot.sendMessage(chatId, "👋 Welcome to 1Bingo!\nPlease share your phone number to continue:", contactOptions);
-    }
-  } catch (error) {
-    console.error("Error checking user:", error.message);
-    bot.sendMessage(chatId, "❌ Error checking registration. Try again.");
-  }
-});
-
-// Handle contact share
-bot.on("contact", async (msg) => {
-  const chatId = msg.chat.id;
-  const contact = msg.contact;
-  const phoneNumber = contact.phone_number;
-  const firstName = contact.first_name || "";
-  const username = msg.from.username || "NoUsername";
-
-  let profile_picture = "";
-  try {
-    const userPhotos = await bot.getUserProfilePhotos(chatId, { limit: 1 });
-    if (userPhotos.total_count > 0) {
-      profile_picture = userPhotos.photos[0][0].file_id;
-    }
-  } catch (err) {
-    console.log("Could not fetch user photo:", err.message);
-  }
-
-  try {
-    await axios.post(`${backendUrl}/api/user/telegram-auth`, {
-      telegram_id: chatId,
-      username,
-      phone_number: phoneNumber,
-      first_name: firstName,
-      profile_picture,
     });
 
-    console.log(`✅ Contact saved for ${username}`);
-
-  const frontendBaseUrl = "https://bingo-telegram-web.vercel.app";
-const playUrl = `${frontendBaseUrl}?telegram_id=${chatId}&first_name=${encodeURIComponent(firstName)}&username=${encodeURIComponent(username)}`;
-
-bot.sendMessage(chatId, "✅ Phone received! Tap below to play 🎮", {
-  reply_markup: {
-    inline_keyboard: [[{ text: "▶️ Play", url: playUrl }]],
-  },
-});
-  } catch (error) {
-    console.error("❌ Error saving contact:", error.message);
-    bot.sendMessage(chatId, "❌ Error saving your contact. Please try again later.");
-  }
-});
-
-// /help
-bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    "Commands:\n/join — Join a game\n/bingo — Call bingo\n/status — Check game status"
-  );
-});
-
-// /join
-bot.onText(/\/join/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const res = await axios.post(`${backendUrl}/api/game/join`, {
-      telegramId: chatId,
-      username: msg.from.username || "NoUsername",
+  bot.action(/ticket_.*/,
+    async (ctx) => {
+      const [chatId,
+        ticket] = [ctx.chat.id,
+        ctx.match[0]];
+      let msg = ''
+      const user = await User.findOne({
+        id: chatId
+      })
+      const data = await client.getUserData(chatId);
+      const info = await bingo[ticket].getInfo();
+      const price = bingo_data.priceOf(ticket);
+      const name = bingo_data.name[price];
+      if (data.message.wallet.sprout_coins >= price) {
+        user.betCoin = price;
+        user.ticket = ticket;
+        user.save();
+        let bonus = info.bonus == 0 || info.bonus == null ? ((price / 100) * 75) + price: info.bonus;
+        msg = lang_data.valueJson(lang(data).play.text_selection, {
+          1: name,
+          2: bonus
+        });
+        return await ctx.editMessageText(msg,
+          Markup.inlineKeyboard(table(info.data.numbers)))
+      } else {
+        msg = lang_data.valueJson(lang(data).play.not_coin,
+          {
+            1: price,
+            2: data.message.wallet.sprout_coins
+          });
+        return await ctx.editMessageText(msg)
+      }
     });
 
-    bot.sendMessage(chatId, `✅ You joined the game! Your ticket: ${res.data.ticketNumber}`);
-  } catch (error) {
-    console.error("Join error:", error.message);
-    bot.sendMessage(chatId, "❌ Failed to join game. Please try again later.");
-  }
-});
+  bot.action(/num_.*/,
+    async (ctx)=> {
+      let num = ctx.match[0].split("_")[1],
+      msg = '';
+      const chatId = ctx.chat.id;
+      let data = await client.getUserData(chatId);
+      const user = await User.findOne({
+        id: chatId
+      })
+      user.betNumber = num;
+      user.save();
+      msg = lang_data.valueJson(lang(data).play_confirm.text,
+        {
+          1: num,
+          2: bingo_data.name[user.betCoin],
+          3: data.message.wallet.sprout_coins
+        });
+      return await ctx.editMessageText(msg,
+        Markup.inlineKeyboard(lang(data).play_confirm.inline))
+    })
 
-// /bingo
-bot.onText(/\/bingo/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const res = await axios.post(`${backendUrl}/api/bingo`, { telegramId: chatId });
-    if (res.data.success) {
-      bot.sendMessage(chatId, "🎉 Congratulations! You called Bingo successfully!");
-    } else {
-      bot.sendMessage(chatId, "❌ You do not have Bingo yet!");
+  bot.action('bet_yes',
+    async (ctx) => {
+      let chatId = ctx.chat.id,
+      msg = '';
+      const user = await User.findOne({
+        id: chatId
+      })
+      const data = await client.getUserData(chatId)
+      const coin = user.betCoin,
+      number = user.betNumber,
+      ticket = user.ticket;
+      await client.sproutCoins(chatId, data.message.wallet.sprout_coins - coin)
+      let bet = await bingo[ticket].bet(chatId, number, coin);
+      if (bet) {
+        msg = lang_data.valueJson(lang(data).bet_yes.text_ok, {
+          1: coin,
+          2: data.message.wallet.sprout_coins - coin,
+        })
+      } else {
+        msg = lang(data).bet_yes.text_bad
+      }
+      return await ctx.editMessageText(msg);
+    });
+
+  bot.action('bet_not',
+    async (ctx) => {
+      let chatId = ctx.chat.id,
+      msg = '';
+      const data = await client.getUserData(chatId)
+      msg = lang(data).bet_not.text;
+      return await ctx.editMessageText(msg)
+    });
+
+  bot.hears('💲 SproutCoin',
+    async (ctx) => {
+      const chatId = ctx.chat.id;
+      ctx.deleteMessage(ctx.message.message_id);
+      return await ctx.reply('Opción no disponible');
+    });
+
+  bot.hears('Apuestas 📜',
+    async (ctx) => {
+      let chatId = ctx.chat.id;
+      let msg = '';
+      for (let i in bingo) {
+        let bin = await bingo[i].getInfo();
+        //  if (bin.data.users[chatId] != null) {
+        msg += JSON.stringify(bin.data)
+        // }
+      }
+      await ctx.deleteMessage(ctx.message.message_id);
+      return await ctx.reply(msg)
+    });
+
+  bot.hears('Ajustes ⚙️',
+    async (ctx) => {
+      await ctx.deleteMessage(ctx.message.message_id);
+      return await ctx.reply('Opción no disponible')
+    });
+  const startResult = async () => {
+    await result.start(bingo,
+      (winner)=> {
+        console.log(winner)
+      },
+      (losers)=> {
+        console.log(losers)
+      });
+    let p = -1;
+    for (let i in bingo_data.boto) {
+      p++;
+      bingo[i] = new Bingo(bingo_data.boto[p])
     }
-  } catch (error) {
-    console.error("Bingo error:", error.message);
-    bot.sendMessage(chatId, "❌ Error calling Bingo. Please try again.");
-  }
-});
-
-// /status
-bot.onText(/\/status/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const res = await axios.get(`${backendUrl}/api/status`, {
-      params: { telegramId: chatId },
+  };
+  bot.command('res',
+    async (ctx)=> {
+      await startResult();
+    })
+  bot.command('sc',
+    async (ctx)=> {
+      let dat = await client.sproutCoins(ctx.chat.id, 9999)
+      return await ctx.reply(JSON.stringify(dat));
+    })
+  bot.on('text',
+    async (ctx) => {
+      const chatId = ctx.chat.id;
+      return await ctx.deleteMessage(ctx.message.message_id);
     });
-    bot.sendMessage(chatId, `🎲 Your game status: ${res.data.status}`);
-  } catch (error) {
-    console.error("Status error:", error.message);
-    bot.sendMessage(chatId, "❌ Unable to fetch status right now.");
-  }
-});
-
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Web server running on port ${PORT}`);
-});
+  (async()=> {
+    await cronos(0, async()=> {
+     await startResult();
+    })
+  })();
+  bot.launch();
+}
+module.exports = Index;
